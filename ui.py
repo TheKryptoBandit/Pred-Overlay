@@ -1,3 +1,4 @@
+# ui.py
 import tkinter as tk
 from tkinter import ttk, font
 import json
@@ -6,12 +7,8 @@ import requests
 from PIL import Image, ImageTk
 import io
 import shutil
-import time
 import sys
-import ctypes
-from ctypes import windll
 
-# --- Configuration ---
 API_BASE_URL = "https://omeda.city"
 
 if getattr(sys, 'frozen', False):
@@ -27,16 +24,14 @@ ITEMS_JSON_FILE = os.path.join(CACHE_FOLDER, "items.json")
 
 LANES = ['Carry', 'Support', 'Midlane', 'Offlane', 'Jungle']
 MAX_BUILD_ITEMS = 6
-
-# --- UI Colors & Styles ---
 BG_COLOR = "#111827"
 FG_COLOR = "#F9FAFB"
 ACCENT_COLOR = "#3B82F6"
 FRAME_COLOR = "#1F2937"
 TRANSPARENT_COLOR = "#010101"
+RARITY_COLORS = {"Common": "#9CA3AF", "Uncommon": "#22C55E", "Rare": "#3B82F6", "Epic": "#A855F7", "Legendary": "#F97316", "Default": "#4B5563"}
 
 class DataHandler:
-    """Handles fetching and caching of game data and images."""
     def __init__(self):
         self.heroes = []
         self.items = []
@@ -47,42 +42,31 @@ class DataHandler:
         self.fetch_game_data()
 
     def fetch_game_data(self):
-        """Fetches data, re-fetching if cache is older than 24 hours."""
-        api_heroes, api_items, cache_is_valid = None, None, False
-        CACHE_DURATION = 24 * 60 * 60
+        api_heroes, api_items = None, None
         if os.path.exists(HEROES_JSON_FILE) and os.path.exists(ITEMS_JSON_FILE):
             try:
-                if time.time() - os.path.getmtime(HEROES_JSON_FILE) < CACHE_DURATION:
-                    print("Loading game data from recent local cache...")
-                    with open(HEROES_JSON_FILE, 'r', encoding='utf-8') as f: api_heroes = json.load(f)
-                    with open(ITEMS_JSON_FILE, 'r', encoding='utf-8') as f: api_items = json.load(f)
-                    cache_is_valid = True
-                else: print("Cache is outdated, will re-fetch from API.")
-            except (json.JSONDecodeError, OSError) as e: print(f"Cache file error ({e}), re-fetching.")
-        if not cache_is_valid:
-            print("Fetching latest game data from Omeda.city...")
+                with open(HEROES_JSON_FILE, 'r', encoding='utf-8') as f: api_heroes = json.load(f)
+                with open(ITEMS_JSON_FILE, 'r', encoding='utf-8') as f: api_items = json.load(f)
+            except json.JSONDecodeError: api_heroes, api_items = None, None
+        if not api_heroes or not api_items:
             try:
-                heroes_res, items_res = requests.get(f"{API_BASE_URL}/heroes.json"), requests.get(f"{API_BASE_URL}/items.json")
+                heroes_res = requests.get(f"{API_BASE_URL}/heroes.json")
+                items_res = requests.get(f"{API_BASE_URL}/items.json")
                 heroes_res.raise_for_status(); items_res.raise_for_status()
                 api_heroes, api_items = heroes_res.json(), items_res.json()
                 with open(HEROES_JSON_FILE, 'w', encoding='utf-8') as f: json.dump(api_heroes, f)
                 with open(ITEMS_JSON_FILE, 'w', encoding='utf-8') as f: json.dump(api_items, f)
-                print("Game data fetched and saved to cache.")
-            except requests.RequestException as e:
-                print(f"FATAL ERROR fetching data: {e}.")
-                if os.path.exists(HEROES_JSON_FILE):
-                    print("Falling back to outdated local cache...")
-                    try:
-                        with open(HEROES_JSON_FILE, 'r', encoding='utf-8') as f: api_heroes = json.load(f)
-                        with open(ITEMS_JSON_FILE, 'r', encoding='utf-8') as f: api_items = json.load(f)
-                    except (json.JSONDecodeError, OSError): return
-                else: return
+            except requests.RequestException as e: print(f"FATAL ERROR: Could not fetch game data: {e}.")
         self.heroes = sorted([{'id': h['name'].lower(), 'name': h['display_name'], 'icon': h['image']} for h in api_heroes], key=lambda x: x['name'])
         all_items_full_data = [i for i in api_items if i.get('display_name')]
-        crests_full_data = [item for item in all_items_full_data if 'Crest' in item.get('display_name', '')]
-        self.items = sorted([{'id': i['name'].lower(), 'name': i['display_name'], 'icon': i['image']} for i in all_items_full_data if 'Crest' not in i.get('display_name', '')], key=lambda x: x['name'])
-        self.base_crests, self.crest_evolution_map, all_children_internal_names = [], {}, set()
+        crests_full_data = [item for item in all_items_full_data if item.get('slot_type') == 'Crest']
+        EXCLUDED_SLOT_TYPES = ["Crest", "Trinket", "Consumable", "Potion", "Active"]
+        EXCLUDED_RARITIES = ["Common", "Uncommon", "Rare"]
+        self.items = [i for i in all_items_full_data if i.get('slot_type') not in EXCLUDED_SLOT_TYPES and i.get('rarity') not in EXCLUDED_RARITIES]
+        self.items = [{'id': i['name'].lower(), 'name': i['display_name'], 'icon': i['image'], 'hero_class': i.get('hero_class'), 'rarity': i.get('rarity')} for i in self.items]
+        self.base_crests, self.crest_evolution_map = [], {}
         crest_map_by_internal_name = {c['name']: c for c in crests_full_data}
+        all_children_internal_names = set()
         for crest in crests_full_data:
             for req in crest.get('requirements', []):
                 if req in crest_map_by_internal_name:
@@ -90,9 +74,9 @@ class DataHandler:
                     self.crest_evolution_map[req].append({'id': crest['name'].lower(), 'name': crest['display_name'], 'icon': crest['image'], 'internal_name': crest['name']})
                     all_children_internal_names.add(crest['name'])
         for crest in crests_full_data:
-            if crest['name'] not in all_children_internal_names: self.base_crests.append({'id': crest['name'].lower(), 'name': crest['display_name'], 'icon': crest['image'], 'internal_name': crest['name']})
+            if crest['name'] not in all_children_internal_names:
+                self.base_crests.append({'id': crest['name'].lower(), 'name': crest['display_name'], 'icon': crest['image'], 'internal_name': crest['name']})
         self.base_crests.sort(key=lambda x: x['name'])
-        print("Data processing complete.")
 
     def get_image(self, path, size):
         if not path: return self.get_placeholder(size)
@@ -133,44 +117,69 @@ class ScrollableFrame(tk.Frame):
         self.scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
-        def _on_mousewheel(event):
-            try: canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-            except tk.TclError: pass
+        def _on_mousewheel(event): canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
         canvas.bind('<Enter>', lambda e: canvas.bind_all('<MouseWheel>', _on_mousewheel))
         canvas.bind('<Leave>', lambda e: canvas.unbind_all('<MouseWheel>'))
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
-
-class ControlPanelWindow(tk.Toplevel):
-    """The pop-up window for all settings and build management."""
-    def __init__(self, master):
-        super().__init__(master)
-        self.master_app = master
-        self.data = self.master_app.data
-        self.title("Build Overlay Controls")
-        self.geometry("1000x800")
-        self.configure(bg=BG_COLOR)
-        self.transient(master)
-
-        self._create_widgets()
-        self.populate_hero_list()
-        self.draw_build_area()
-
-    def _create_widgets(self):
-        title_bar = tk.Frame(self, bg=FRAME_COLOR); title_bar.pack(fill="x")
-        tk.Label(title_bar, text="Predecessor Build Overlay", bg=FRAME_COLOR, fg=FG_COLOR).pack(side="left", padx=10)
-        tk.Button(title_bar, text="X", bg="red", fg=FG_COLOR, bd=0, command=self.withdraw).pack(side="right")
         
-        content_frame = tk.Frame(self, bg=BG_COLOR); content_frame.pack(fill="both", expand=True)
+class App(tk.Tk):
+    def __init__(self, data_handler):
+        super().__init__()
+        self.data = data_handler
+        self.title("Predecessor Overlay Control Panel")
+        self.geometry("1000x800+100+100")
+        self.overrideredirect(True) 
+        self.wm_attributes("-topmost", True)
+        self.config(bg=TRANSPARENT_COLOR)
+        self.wm_attributes("-transparentcolor", TRANSPARENT_COLOR)
+        self.all_builds = self.load_builds()
+        self.active_build, self.selected_hero, self.is_editing = None, None, False
+        self.offset_x, self.offset_y = 0, 0
+        self.main_frame = None
+        self.display_expanded_view()
+        self.bind("<Button-1>", self.on_click)
+        self.bind("<B1-Motion>", self.on_drag)
+
+    def on_click(self, event): self.offset_x, self.offset_y = event.x, event.y
+    def on_drag(self, event): self.geometry(f"+{self.winfo_x() + event.x - self.offset_x}+{self.winfo_y() + event.y - self.offset_y}")
+    def clear_main_frame(self):
+        if self.main_frame: self.main_frame.destroy()
+    def display_collapsed_view(self):
+        self.clear_main_frame()
+        self.geometry("550x80")
+        self.main_frame = tk.Frame(self, bg=TRANSPARENT_COLOR, padx=8, pady=8)
+        self.main_frame.pack(fill="both", expand=True)
+        hero_icon = self.data.get_image(self.selected_hero['icon'], (64, 64))
+        hero_icon_label = tk.Label(self.main_frame, image=hero_icon, bg=TRANSPARENT_COLOR); hero_icon_label.image = hero_icon
+        hero_icon_label.pack(side="left")
+        for item in self.active_build.get('items', []):
+            item_icon = self.data.get_image(item['icon'], (48, 48))
+            item_label = tk.Label(self.main_frame, image=item_icon, bg=TRANSPARENT_COLOR); item_label.image = item_icon
+            item_label.pack(side="left", padx=2)
+        if self.active_build.get('crest'):
+            tk.Frame(self.main_frame, bg="gray", width=2, height=48).pack(side="left", padx=5)
+            crest_icon = self.data.get_image(self.active_build['crest']['icon'], (48, 48))
+            crest_label = tk.Label(self.main_frame, image=crest_icon, bg=TRANSPARENT_COLOR); crest_label.image = crest_icon
+            crest_label.pack(side="left", padx=1)
+        expand_btn = tk.Button(self.main_frame, text="EXPAND", bg=ACCENT_COLOR, fg=FG_COLOR, bd=0, command=self.display_expanded_view)
+        expand_btn.pack(side="right", padx=10)
+        
+    def display_expanded_view(self):
+        self.active_build, self.is_editing = None, False
+        self.clear_main_frame()
+        self.geometry("1000x800")
+        self.main_frame = tk.Frame(self, bg=BG_COLOR); self.main_frame.pack(fill="both", expand=True)
+        title_bar = tk.Frame(self.main_frame, bg=FRAME_COLOR); title_bar.pack(fill="x")
+        tk.Label(title_bar, text="Predecessor Build Overlay", bg=FRAME_COLOR, fg=FG_COLOR).pack(side="left", padx=10)
+        tk.Button(title_bar, text="X", bg="red", fg=FG_COLOR, bd=0, command=self.destroy).pack(side="right")
+        content_frame = tk.Frame(self.main_frame, bg=BG_COLOR); content_frame.pack(fill="both", expand=True)
         self.hero_list_container = tk.Frame(content_frame, bg=BG_COLOR, width=192)
         self.hero_list_container.pack(side="left", fill="y", padx=5, pady=5); self.hero_list_container.pack_propagate(False)
-        self.build_view_frame = tk.Frame(content_frame, bg=BG_COLOR)
-        self.build_view_frame.pack(side="left", fill="both", expand=True)
-
-        bottom_bar = tk.Frame(self, bg=BG_COLOR, padx=10, pady=5); bottom_bar.pack(fill="x", side="bottom")
-        tk.Label(bottom_bar, text="Press Ctrl+Shift+B to open this panel.", bg=BG_COLOR, fg="yellow", font=("Segoe UI", 8)).pack(side="left")
-        tk.Button(bottom_bar, text="Quit App", bg="red", fg=FG_COLOR, bd=0, command=self.master_app.destroy).pack(side="right")
-
+        self.build_view_frame = tk.Frame(content_frame, bg=BG_COLOR); self.build_view_frame.pack(side="left", fill="both", expand=True)
+        self.populate_hero_list()
+        self.draw_build_area()
+    
     def populate_hero_list(self):
         for widget in self.hero_list_container.winfo_children(): widget.destroy()
         scroll_area = ScrollableFrame(self.hero_list_container, bg=BG_COLOR)
@@ -181,25 +190,20 @@ class ControlPanelWindow(tk.Toplevel):
             btn.image = icon
             btn.grid(row=i // 2, column=i % 2, padx=2, pady=2)
         
-    def select_hero(self, hero):
-        self.master_app.selected_hero, self.master_app.is_editing = hero, False
-        self.draw_build_area()
-
+    def select_hero(self, hero): self.selected_hero, self.is_editing = hero, False; self.draw_build_area()
     def draw_build_area(self):
         for widget in self.build_view_frame.winfo_children(): widget.destroy()
-        if not self.master_app.selected_hero:
-            tk.Label(self.build_view_frame, text="Select a hero to begin...", font=("Segoe UI", 24), bg=BG_COLOR, fg=FG_COLOR).pack(expand=True)
-            return
-        if self.master_app.is_editing: self.draw_build_editor()
+        if not self.selected_hero: tk.Label(self.build_view_frame, text="Select a hero to begin...", font=("Segoe UI", 24), bg=BG_COLOR, fg=FG_COLOR).pack(expand=True); return
+        if self.is_editing: self.draw_build_editor()
         else: self.draw_build_viewer()
             
     def draw_build_viewer(self):
         header = tk.Frame(self.build_view_frame, bg=BG_COLOR); header.pack(fill="x", pady=10)
-        hero_icon = self.data.get_image(self.master_app.selected_hero['icon'], (80, 80)); hero_label = tk.Label(header, image=hero_icon, bg=BG_COLOR); hero_label.image = hero_icon; hero_label.pack(side="left", padx=10)
-        tk.Label(header, text=f"{self.master_app.selected_hero['name']}'s Builds", font=("Segoe UI", 20, "bold"), bg=BG_COLOR, fg=FG_COLOR).pack(side="left")
+        hero_icon = self.data.get_image(self.selected_hero['icon'], (80, 80)); hero_label = tk.Label(header, image=hero_icon, bg=BG_COLOR); hero_label.image = hero_icon; hero_label.pack(side="left", padx=10)
+        tk.Label(header, text=f"{self.selected_hero['name']}'s Builds", font=("Segoe UI", 20, "bold"), bg=BG_COLOR, fg=FG_COLOR).pack(side="left")
         tk.Button(self.build_view_frame, text="Create New Build", bg=ACCENT_COLOR, fg=FG_COLOR, bd=0, command=lambda: self.enter_edit_mode()).pack(fill="x", padx=10, pady=10)
         build_list_scroll_area = ScrollableFrame(self.build_view_frame, bg=BG_COLOR); build_list_scroll_area.pack(fill="both", expand=True, padx=10)
-        hero_builds = self.master_app.all_builds.get(self.master_app.selected_hero['id'], [])
+        hero_builds = self.all_builds.get(self.selected_hero['id'], [])
         builds_by_lane = {lane: [b for b in hero_builds if b['lane'] == lane] for lane in LANES}
         for lane in LANES:
             if builds_by_lane.get(lane):
@@ -211,22 +215,19 @@ class ControlPanelWindow(tk.Toplevel):
                     tk.Button(top_frame, text="Delete", bg="red", fg=FG_COLOR, bd=0, command=lambda b=build: self.delete_build(b)).pack(side="right")
                     tk.Button(top_frame, text="Edit", bg="orange", fg=FG_COLOR, bd=0, command=lambda b=build: self.enter_edit_mode(b)).pack(side="right", padx=5)
                     display_frame = tk.Frame(build_frame, bg=FRAME_COLOR); display_frame.pack()
-                    btn = tk.Button(display_frame, text="SHOW ON OVERLAY", bg=BG_COLOR, fg=FG_COLOR, bd=0, command=lambda b=build: self.master_app.select_active_build(b)); btn.pack(side="left", padx=(0, 5))
+                    btn = tk.Button(display_frame, text="SELECT", bg=BG_COLOR, fg=FG_COLOR, bd=0, command=lambda b=build: self.select_active_build(b)); btn.pack(side="left", padx=(0, 5))
                     for item in build.get('items', []):
                         item_icon = self.data.get_image(item['icon'], (40, 40)); item_label = tk.Label(display_frame, image=item_icon, bg=FRAME_COLOR); item_label.image = item_icon; item_label.pack(side="left")
                     if build.get('crest'):
                         tk.Frame(display_frame, bg="gray", width=2, height=30).pack(side="left", padx=5)
                         crest_icon = self.data.get_image(build['crest']['icon'], (40, 40)); crest_label = tk.Label(display_frame, image=crest_icon, bg=FRAME_COLOR); crest_label.image = crest_icon; crest_label.pack(side="left")
 
-    def enter_edit_mode(self, build=None):
-        self.master_app.is_editing = build or True
-        self.draw_build_area()
-        
+    def enter_edit_mode(self, build=None): self.is_editing = build or True; self.draw_build_area()
     def draw_build_editor(self):
-        build_data = self.master_app.is_editing if isinstance(self.master_app.is_editing, dict) else {'id': f"build-{self.master_app.selected_hero['id']}-{len(self.master_app.all_builds.get(self.master_app.selected_hero['id'], []))}", 'name': 'New Build', 'lane': LANES[0], 'items': [], 'crest': None}
+        build_data = self.is_editing if isinstance(self.is_editing, dict) else {'id': f"build-{self.selected_hero['id']}-{len(self.all_builds.get(self.selected_hero['id'], []))}", 'name': 'New Build', 'lane': LANES[0], 'items': [], 'crest': None}
         editor_frame = tk.Frame(self.build_view_frame, bg=BG_COLOR); editor_frame.pack(fill="both", expand=True)
         top_frame = tk.Frame(editor_frame, bg=BG_COLOR); top_frame.pack(fill="x")
-        tk.Label(top_frame, text=f"Editing for {self.master_app.selected_hero['name']}", font=("Segoe UI", 16), bg=BG_COLOR, fg=FG_COLOR).pack()
+        tk.Label(top_frame, text=f"Editing for {self.selected_hero['name']}", font=("Segoe UI", 16), bg=BG_COLOR, fg=FG_COLOR).pack()
         controls_frame = tk.Frame(top_frame, bg=BG_COLOR); controls_frame.pack(pady=5)
         tk.Label(controls_frame, text="Name:", bg=BG_COLOR, fg=FG_COLOR).pack(side="left"); name_var = tk.StringVar(value=build_data['name']); tk.Entry(controls_frame, textvariable=name_var).pack(side="left")
         tk.Label(controls_frame, text="Lane:", bg=BG_COLOR, fg=FG_COLOR).pack(side="left", padx=5); lane_var = tk.StringVar(value=build_data['lane']); ttk.Combobox(controls_frame, textvariable=lane_var, values=LANES, state="readonly").pack(side="left")
@@ -234,7 +235,7 @@ class ControlPanelWindow(tk.Toplevel):
         tk.Label(current_build_frame, text="Items", bg=BG_COLOR, fg=FG_COLOR).grid(row=0, column=0, pady=(0, 5)); current_items_frame = tk.Frame(current_build_frame, bg=FRAME_COLOR, padx=5, pady=5); current_items_frame.grid(row=1, column=0)
         tk.Label(current_build_frame, text="Crest", bg=BG_COLOR, fg=FG_COLOR).grid(row=0, column=1, pady=(0, 5), padx=(10, 0)); current_crest_frame = tk.Frame(current_build_frame, bg=FRAME_COLOR, padx=5, pady=5); current_crest_frame.grid(row=1, column=1, padx=(10, 0))
         action_frame = tk.Frame(editor_frame, bg=BG_COLOR); action_frame.pack(side="bottom", pady=10)
-        tk.Button(action_frame, text="Cancel", command=lambda: self.select_hero(self.master_app.selected_hero)).pack(side="left")
+        tk.Button(action_frame, text="Cancel", command=lambda: self.select_hero(self.selected_hero)).pack(side="left")
         tk.Button(action_frame, text="Save", bg="green", fg=FG_COLOR, command=lambda: self.save_build(build_data, name_var.get(), lane_var.get())).pack(side="left")
         lists_container = tk.Frame(editor_frame, bg=BG_COLOR); lists_container.pack(fill="both", expand=True)
         def update_displays():
@@ -252,10 +253,24 @@ class ControlPanelWindow(tk.Toplevel):
         def select_crest(crest): build_data['crest'] = crest; update_displays()
         update_displays()
         tk.Label(lists_container, text="Available Items", bg=BG_COLOR, fg=FG_COLOR).pack()
-        item_scroll_container = ScrollableFrame(lists_container, bg=BG_COLOR, height=200); item_scroll_container.pack(fill="x", pady=5)
-        for i, item in enumerate(self.data.items):
-            icon = self.data.get_image(item['icon'], (48, 48)); btn = tk.Button(item_scroll_container.scrollable_frame, image=icon, bg=FRAME_COLOR, command=lambda it=item: add_item(it)); btn.image = icon
-            btn.grid(row=i // 14, column=i % 14, padx=1, pady=1)
+        item_scroll_container = ScrollableFrame(lists_container, bg=BG_COLOR); item_scroll_container.pack(fill="both", expand=True, pady=5)
+        items_by_class, class_order = {}, ['Marksman', 'Fighter', 'Tank', 'Mage', 'Support']
+        for item in self.data.items:
+            hero_class = item.get('hero_class') or "General"
+            if hero_class not in items_by_class: items_by_class[hero_class] = []
+            items_by_class[hero_class].append(item)
+            if hero_class not in class_order: class_order.append(hero_class)
+        for hero_class in class_order:
+            if hero_class in items_by_class:
+                tk.Label(item_scroll_container.scrollable_frame, text=hero_class, font=("Segoe UI", 10, "bold"), bg=BG_COLOR, fg=ACCENT_COLOR).pack(anchor="w", padx=5, pady=(10, 2))
+                class_frame = tk.Frame(item_scroll_container.scrollable_frame, bg=BG_COLOR); class_frame.pack(fill="x")
+                items_in_class = sorted(items_by_class[hero_class], key=lambda x: x['name'])
+                for i, item in enumerate(items_in_class):
+                    icon = self.data.get_image(item['icon'], (48, 48))
+                    border_color = RARITY_COLORS.get(item.get('rarity'), RARITY_COLORS["Default"])
+                    border_frame = tk.Frame(class_frame, bg=border_color)
+                    btn = tk.Button(border_frame, image=icon, bg=FRAME_COLOR, bd=0, command=lambda it=item: add_item(it)); btn.image = icon; btn.pack(padx=2, pady=2)
+                    border_frame.grid(row=i // 14, column=i % 14, padx=1, pady=1)
         tk.Label(lists_container, text="Crests", bg=BG_COLOR, fg=FG_COLOR).pack(); crest_scroll_container = ScrollableFrame(lists_container, bg=BG_COLOR, height=250); crest_scroll_container.pack(fill="x", pady=5)
         tk.Label(crest_scroll_container.scrollable_frame, text="1. Select Base Crest", bg=BG_COLOR, fg=FG_COLOR).pack(); base_crest_frame = tk.Frame(crest_scroll_container.scrollable_frame, bg=BG_COLOR); base_crest_frame.pack()
         tk.Label(crest_scroll_container.scrollable_frame, text="2. Select Evolution", bg=BG_COLOR, fg=FG_COLOR).pack(); evolved_crest_frame = tk.Frame(crest_scroll_container.scrollable_frame, bg=BG_COLOR); evolved_crest_frame.pack(pady=2)
@@ -280,111 +295,30 @@ class ControlPanelWindow(tk.Toplevel):
 
     def save_build(self, build_data, name, lane):
         build_data['name'], build_data['lane'] = name, lane
-        hero_id = self.master_app.selected_hero['id']
-        if hero_id not in self.master_app.all_builds: self.master_app.all_builds[hero_id] = []
-        builds, found = self.master_app.all_builds[hero_id], False
+        hero_id = self.selected_hero['id']
+        if hero_id not in self.all_builds: self.all_builds[hero_id] = []
+        builds, found = self.all_builds[hero_id], False
         for i, b in enumerate(builds):
             if b['id'] == build_data['id']: builds[i], found = build_data, True; break
         if not found: builds.append(build_data)
-        with open(BUILDS_FILE, 'w') as f: json.dump(self.master_app.all_builds, f, indent=2)
-        self.select_hero(self.master_app.selected_hero)
+        with open(BUILDS_FILE, 'w') as f: json.dump(self.all_builds, f, indent=2)
+        self.select_hero(self.selected_hero)
 
     def delete_build(self, build_to_delete):
-        hero_id = self.master_app.selected_hero['id']
-        if hero_id in self.master_app.all_builds:
-            self.master_app.all_builds[hero_id] = [b for b in self.master_app.all_builds[hero_id] if b['id'] != build_to_delete['id']]
-        with open(BUILDS_FILE, 'w') as f: json.dump(self.master_app.all_builds, f, indent=2)
+        hero_id = self.selected_hero['id']
+        if hero_id in self.all_builds: self.all_builds[hero_id] = [b for b in self.all_builds[hero_id] if b['id'] != build_to_delete['id']]
+        with open(BUILDS_FILE, 'w') as f: json.dump(self.all_builds, f, indent=2)
         self.draw_build_area()
-
-class BuildOverlayApp(tk.Tk):
-    """The main application class, which is the borderless overlay window."""
-    def __init__(self, data_handler):
-        super().__init__()
-        self.data = data_handler
-        self.overrideredirect(True)
-        self.geometry("550x80+100+100")
-        self.wm_attributes("-topmost", True)
-        self.config(bg=TRANSPARENT_COLOR)
-        self.after(100, self.setup_window_styles)
-        
-        self.all_builds = self.load_builds()
-        self.active_build, self.selected_hero, self.is_editing = None, None, False
-        self.control_panel = None
-        
-        self._create_widgets()
-        self.bind_all("<Control-Shift-B>", self.open_control_panel_hotkey)
-        self.set_clickthrough(False)
-
-    def open_control_panel_hotkey(self, event=None): self.open_control_panel()
-    def setup_window_styles(self):
-        try:
-            hwnd = self.winfo_id()
-            transparent_color_hex = 0x00010101
-            ex_style = windll.user32.GetWindowLongW(hwnd, -20) | 0x00080000
-            windll.user32.SetWindowLongW(hwnd, -20, ex_style)
-            windll.user32.SetLayeredWindowAttributes(hwnd, transparent_color_hex, 0, 0x00000001)
-        except Exception as e:
-            print(f"Failed to set WinAPI transparency: {e}")
-            self.wm_attributes("-transparentcolor", TRANSPARENT_COLOR)
-
-    def set_clickthrough(self, enabled):
-        try:
-            hwnd = self.winfo_id()
-            ex_style = windll.user32.GetWindowLongW(hwnd, -20)
-            if enabled:
-                new_style = ex_style | 0x00000020
-                self.unbind("<Button-1>"); self.unbind("<B1-Motion>")
-            else:
-                new_style = ex_style & ~0x00000020
-                self.bind("<Button-1>", self.on_click); self.bind("<B1-Motion>", self.on_drag)
-            windll.user32.SetWindowLongW(hwnd, -20, new_style)
-        except Exception as e: print(f"Failed to set click-through style: {e}")
-
-    def on_click(self, event): self.offset_x, self.offset_y = event.x, event.y
-    def on_drag(self, event): self.geometry(f"+{self.winfo_x() + event.x - self.offset_x}+{self.winfo_y() + event.y - self.offset_y}")
-
-    def _create_widgets(self):
-        self.main_frame = tk.Frame(self, bg=TRANSPARENT_COLOR)
-        self.main_frame.pack(fill="both", expand=True)
-        self.status_label = tk.Label(self.main_frame, text="Press Ctrl+Shift+B to open controls", bg=FRAME_COLOR, fg=FG_COLOR)
-        self.status_label.pack(fill="both", expand=True, padx=10, pady=10)
-        
-        self.settings_btn = tk.Button(self, text="⚙️", bg=FRAME_COLOR, fg=FG_COLOR, font=("Segoe UI", 10), relief="flat", command=self.open_control_panel)
-        self.bind("<Enter>", self.show_settings_btn); self.bind("<Leave>", self.hide_settings_btn)
-
-    def show_settings_btn(self, event=None): self.settings_btn.place(relx=1.0, rely=0.5, anchor='e')
-    def hide_settings_btn(self, event=None): self.settings_btn.place_forget()
-
-    def open_control_panel(self):
-        if self.control_panel is None or not self.control_panel.winfo_exists():
-            self.control_panel = ControlPanelWindow(self)
-        self.control_panel.focus()
 
     def select_active_build(self, build):
         self.active_build = build
-        self.update_overlay_display()
-
-    def update_overlay_display(self):
-        for widget in self.main_frame.winfo_children(): widget.destroy()
-        if not self.active_build or not self.selected_hero:
-            self.status_label = tk.Label(self.main_frame, text="Press Ctrl+Shift+B to open controls", bg=FRAME_COLOR, fg=FG_COLOR)
-            self.status_label.pack(fill="both", expand=True, padx=10, pady=10)
-            return
-        
-        build_frame = tk.Frame(self.main_frame, bg=TRANSPARENT_COLOR, padx=8, pady=8)
-        build_frame.pack(fill="both", expand=True)
-        hero_icon = self.data.get_image(self.selected_hero['icon'], (64, 64))
-        hero_icon_label = tk.Label(build_frame, image=hero_icon, bg=TRANSPARENT_COLOR); hero_icon_label.image = hero_icon
-        hero_icon_label.pack(side="left")
-        for item in self.active_build.get('items', []):
-            item_icon = self.data.get_image(item['icon'], (48, 48))
-            item_label = tk.Label(build_frame, image=item_icon, bg=TRANSPARENT_COLOR); item_label.image = item_icon
-            item_label.pack(side="left", padx=2)
-        if self.active_build.get('crest'):
-            tk.Frame(build_frame, bg="gray", width=2, height=48).pack(side="left", padx=5)
-            crest_icon = self.data.get_image(self.active_build['crest']['icon'], (48, 48))
-            crest_label = tk.Label(build_frame, image=crest_icon, bg=TRANSPARENT_COLOR); crest_label.image = crest_icon
-            crest_label.pack(side="left", padx=1)
+        payload = {"hero": {"name": self.selected_hero['name'], "icon": f"{API_BASE_URL}{self.selected_hero['icon']}"}, "items": [{"icon": f"{API_BASE_URL}{item['icon']}"} for item in build.get('items', [])], "crest": {"icon": f"{API_BASE_URL}{build.get('crest')['icon']}"} if build.get('crest') else None}
+        try:
+            response = requests.post("http://127.0.0.1:5000/api/set_build", json=payload)
+            response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            print(f"Error sending build to server: {e}")
+        self.display_collapsed_view()
 
     def load_builds(self):
         if os.path.exists(BUILDS_FILE):
@@ -396,9 +330,8 @@ class BuildOverlayApp(tk.Tk):
 def run_ui():
     """Initializes and runs the Tkinter application."""
     data = DataHandler()
-    app = BuildOverlayApp(data)
+    app = App(data)
     app.mainloop()
 
 if __name__ == '__main__':
     run_ui()
-
