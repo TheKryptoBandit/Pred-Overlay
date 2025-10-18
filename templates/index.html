@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Predecessor Overlay</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            background-color: transparent;
+            margin: 0;
+            padding: 0;
+            color: #F9FAFB;
+        }
+        #overlay-container {
+            display: flex;
+            align-items: center;
+            padding: 8px;
+            background-color: rgba(17, 24, 39, 0.85);
+            border-radius: 8px;
+            border: 1px solid #374151;
+            /* Add a fade transition for smooth updates */
+            transition: opacity 0.5s ease-in-out;
+        }
+        img {
+            height: 64px;
+            width: 64px;
+            margin: 0 4px;
+        }
+        .item-icon {
+            height: 48px;
+            width: 48px;
+        }
+        .divider {
+            width: 2px;
+            height: 48px;
+            background-color: #4B5563;
+            margin: 0 10px;
+        }
+    </style>
+</head>
+<body>
+
+<div id="overlay-container">
+    Waiting for build selection...
+</div>
+
+<script>
+    async function updateBuild() {
+        try {
+            // Fetch data from the new endpoint
+            const response = await fetch('/api/get_build');
+            const data = await response.json();
+            
+            const container = document.getElementById('overlay-container');
+
+            // If no hero is selected, hide the overlay
+            if (!data.hero) {
+                container.style.opacity = 0;
+                container.innerHTML = 'Waiting for build selection...';
+                return;
+            }
+
+            // If it was hidden, fade it in
+            container.style.opacity = 1;
+
+            // Clear previous content
+            container.innerHTML = ''; 
+
+            // Add Hero Icon
+            let heroImg = document.createElement('img');
+            heroImg.src = data.hero.icon;
+            container.appendChild(heroImg);
+
+            // Add Item Icons
+            data.items.forEach(item => {
+                let itemImg = document.createElement('img');
+                itemImg.src = item.icon;
+                itemImg.className = 'item-icon';
+                container.appendChild(itemImg);
+            });
+
+            // Add Divider and Crest
+            if (data.crest) {
+                let divider = document.createElement('div');
+                divider.className = 'divider';
+                container.appendChild(divider);
+
+                let crestImg = document.createElement('img');
+                crestImg.src = data.crest.icon;
+                crestImg.className = 'item-icon';
+                container.appendChild(crestImg);
+            }
+
+        } catch (error) {
+            console.error("Failed to fetch build data:", error);
+        }
+    }
+
+    // Update the build when the page loads, and then every 3 seconds
+    updateBuild();
+    setInterval(updateBuild, 3000); 
+</script>
+
+</body>
+</html>

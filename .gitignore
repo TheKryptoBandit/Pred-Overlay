@@ -1,3 +1,8 @@
 app_cache/
 predecessor_builds_v2.json
 predOverlay.spec
+build/
+dist/
+*.log
+__pycache__/
+
